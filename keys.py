@@ -7,8 +7,8 @@ from effects import draw_key_effect
 def draw_keys(screen, key_rects, key_anims):
     for i, rect in enumerate(key_rects):
         anim = key_anims[i]
-        # Передаємо згладжений колір та поточний вертикальний зсув
-        draw_key_effect(screen, rect, anim['color'], anim['offset'])
+        # Передаємо колір, зсув, таймер пульсації та коефіцієнт зменшення
+        draw_key_effect(screen, rect, anim['color'], anim['offset'], anim.get('pulse', 0.0), anim.get('scale', 1.0))
 
 def create_key_rects(num_keys, start_x=50, start_y=120, key_width=100, key_height=240):
     rects = []
