@@ -1,6 +1,7 @@
 import pygame
-from settings import BLACK, GREY
-from effects import draw_button_flash
+from settings import FONT_PATH
+from effects import draw_glass_rect
+
 
 # ==============================================================================
 # =========================== СТРУКТУРА КНОПКИ МЕНЮ ============================
@@ -9,28 +10,29 @@ class Button:
     def __init__(self, text, x, y, width, height):
         self.text = text
         self.rect = pygame.Rect(x, y, width, height)
-        self.font = pygame.font.SysFont("Arial", 20)
+
+        # Спроба імпортувати кастомний шрифт
+        try:
+            self.font = pygame.font.Font(FONT_PATH, 14)
+        except IOError:
+            self.font = pygame.font.SysFont("Arial", 14, bold=True)
+
         self.is_hovered = False
-        self.flash_timer = 0 # Таймер для тривалості спалаху
 
     def update(self, mouse_pos):
-        # Перевіряємо, чи наведена миша на кнопку
         self.is_hovered = self.rect.collidepoint(mouse_pos)
-        # Зменшуємо таймер спалаху з часом
-        if self.flash_timer > 0:
-            self.flash_timer -= 0.1
 
     def draw(self, screen):
-        # Якщо миша наведена — кнопка стає трохи світлішою
-        bg_color = (230, 230, 230) if self.is_hovered else GREY
-        
-        pygame.draw.rect(screen, bg_color, self.rect, border_radius=5)
-        pygame.draw.rect(screen, BLACK, self.rect, 2, border_radius=5)
-        
-        # Викликаємо ефект спалаху
-        draw_button_flash(screen, self.rect, self.flash_timer)
-        
-        text_surf = self.font.render(self.text, True, BLACK)
+        # Зміна прозорості та відтінку при наведенні миші
+        base_color = (255, 255, 255) if self.is_hovered else (245, 245, 250)
+        alpha = 210 if self.is_hovered else 150
+
+        # Малюємо матове скло для кнопки
+        draw_glass_rect(screen, self.rect, base_color, alpha, (255, 255, 255), 230, radius=10, border_width=2)
+        draw_glass_rect(screen, self.rect, (0, 0, 0), 0, (0, 0, 0), 70, radius=10, border_width=1)
+
+        # Рендер тексту всередині кнопки
+        text_surf = self.font.render(self.text, True, (45, 45, 45))
         text_rect = text_surf.get_rect(center=self.rect.center)
         screen.blit(text_surf, text_rect)
 
