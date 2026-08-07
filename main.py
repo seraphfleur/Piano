@@ -1,75 +1,95 @@
 import pygame
 from pygame import *
-from settings import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, keys_list, KEYS, FPS
+from settings import WINDOW_WIDTH, WINDOW_HEIGHT, keys_list, KEYS, FPS
 from keys import create_key_rects, draw_keys
-from sounds import sounds
 from buttons import Button
 from ui.settings_menu import SettingsMenu
 
-# ==============================================================================
-# ============================ СТАРТ ПРОЄКТУ ТА ВІКНО ===========================
-# ==============================================================================
+from sounds import (
+    init_base_sounds,
+    play_sound,
+    get_active_sounds_map,
+    enable_random_sounds,
+    disable_random_sounds,
+    update_all_volumes,
+    is_random_active
+)
+
+from autoplay.midi_manager import MidiAutoplayManager
+from autoplay.autoplay_menu import AutoplayMenu
+
 init()
+mixer.init()
+mixer.set_num_channels(64)
+
+current_volume = 0.7
+current_keys_count = 14
+
+init_base_sounds(current_volume)
+
 screen = display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 display.set_caption("Piano Game")
 clock = time.Clock()
 running = True
 
-# ==============================================================================
-# ======================== ЗАВАНТАЖЕННЯ ГРАФІЧНИХ АСЕТІВ =======================
-# ==============================================================================
+KEY_MAP = {
+    K_q: "q", K_w: "w", K_e: "e", K_r: "r", K_t: "t", K_y: "y", K_u: "u",
+    K_a: "a", K_s: "s", K_d: "d", K_f: "f", K_g: "g", K_h: "h", K_j: "j"
+}
+
+# Швидке завантаження зображень з сумісним форматом пікселів (.convert)
 try:
-    BACKGROUND_IMG = image.load('assets/images/background.png')
+    BACKGROUND_IMG = image.load('assets/images/background.png').convert()
     BACKGROUND_IMG = transform.scale(BACKGROUND_IMG, (WINDOW_WIDTH, WINDOW_HEIGHT))
 except error:
     BACKGROUND_IMG = Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
     BACKGROUND_IMG.fill((230, 233, 240))
 
 try:
-    LOGO_IMG = image.load('assets/images/logo.png')
+    LOGO_IMG = image.load('assets/images/logo.png').convert_alpha()
     LOGO_IMG = transform.scale(LOGO_IMG, (220, 60))
+    LOGO_X = (WINDOW_WIDTH - LOGO_IMG.get_width()) // 2
 except error:
     LOGO_IMG = None
 
-# ==============================================================================
-# ==================== СТАН ЕКРАНУ ТА НАЛАШТУВАННЯ ПО УМОЛЧАННЮ =================
-# ==============================================================================
 current_screen = "main"
-current_volume = 0.7
-current_keys_count = 7
 
-# ==============================================================================
-# =========================== ІНІЦІАЛІЗАЦІЯ ОБ'ЄКТІВ ===========================
-# ==============================================================================
 pressed = set()
+hw_pressed = set()
+mouse_pressed = set()
+
 key_rects = create_key_rects(current_keys_count)
-settings_btn = Button("Settings", 20, 20, 100, 40)
+
+settings_btn = Button("Налаштування", 20, 20, 140, 40)
 settings_menu = None
 
-# Додано базовий масштаб 'scale' для анімації стискання клавіш
-key_anims = [{'color': [255, 255, 255], 'offset': 0.0, 'pulse': 0.0, 'scale': 1.0} for _ in range(current_keys_count)]
+midi_manager = MidiAutoplayManager()
+autoplay_menu = None
+autoplay_btn = Button("Автоплей", 540, 20, 110, 40)
+stop_btn = Button("Стоп MIDI", 665, 20, 115, 40)
 
-for snd in sounds.values():
-    if snd:
-        snd.set_volume(current_volume)
+key_anims = [{'color': [255.0, 255.0, 255.0], 'offset': 0.0, 'pulse': 0.0, 'scale': 1.0} for _ in range(current_keys_count)]
 
 
-# ==============================================================================
-# =========================== ФУНКЦІЇ КЕРУВАННЯ СТАНАМИ ========================
-# ==============================================================================
 def apply_settings(volume, key_count):
-    global current_volume, current_keys_count, key_rects, pressed, key_anims
+    global current_volume, current_keys_count, key_rects, pressed, hw_pressed, mouse_pressed, key_anims
     current_volume = volume
     current_keys_count = key_count
 
-    for snd in sounds.values():
-        if snd:
-            snd.set_volume(current_volume)
+    update_all_volumes(current_volume)
 
     key_rects = create_key_rects(current_keys_count)
     pressed = {idx for idx in pressed if idx < current_keys_count}
-    key_anims = [{'color': [255, 255, 255], 'offset': 0.0, 'pulse': 0.0, 'scale': 1.0} for _ in
-                 range(current_keys_count)]
+    hw_pressed = {idx for idx in hw_pressed if idx < current_keys_count}
+    mouse_pressed = {idx for idx in mouse_pressed if idx < current_keys_count}
+    key_anims = [{'color': [255.0, 255.0, 255.0], 'offset': 0.0, 'pulse': 0.0, 'scale': 1.0} for _ in range(current_keys_count)]
+
+
+def toggle_random_sounds(state):
+    if state:
+        enable_random_sounds(current_volume)
+    else:
+        disable_random_sounds()
 
 
 def _back_to_main():
@@ -77,106 +97,153 @@ def _back_to_main():
     current_screen = "main"
 
 
-# ==============================================================================
-# ============================ ГОЛОВНИЙ ЦИКЛ ГРИ ===============================
-# ==============================================================================
 while running:
     clock.tick(FPS)
     mouse_pos = mouse.get_pos()
 
-    # --------------------------- ОБРОБКА ПОДІЙ СИСТЕМИ ------------------------
-    events = event.get()
-    for e in events:
+    for e in event.get():
         if e.type == QUIT:
             running = False
+
+        if current_screen == "autoplay_menu":
+            if autoplay_menu:
+                autoplay_menu.handle_event(e)
+            continue
 
         if current_screen == "settings":
             if settings_menu:
                 settings_menu.handle_event(e)
         else:
             settings_btn.update(mouse_pos)
+            autoplay_btn.update(mouse_pos)
+            if midi_manager.is_playing:
+                stop_btn.update(mouse_pos)
 
-            # --- Механіка клавіатури ---
+            # --- КЛАВІАТУРА ---
             if e.type == KEYDOWN:
-                k = key.name(e.key)
-                if k in keys_list:
+                if e.key in KEY_MAP:
+                    k = KEY_MAP[e.key]
                     idx = keys_list.index(k)
                     if idx < current_keys_count:
                         if idx not in pressed:
                             key_anims[idx]['pulse'] = 1.5
-                        if sounds[k]:
-                            sounds[k].play()
+                        play_sound(k)
+                        hw_pressed.add(idx)
                         pressed.add(idx)
 
-            if e.type == KEYUP:
-                k = key.name(e.key)
-                if k in keys_list:
+            elif e.type == KEYUP:
+                if e.key in KEY_MAP:
+                    k = KEY_MAP[e.key]
                     idx = keys_list.index(k)
-                    pressed.discard(idx)
+                    hw_pressed.discard(idx)
+                    if idx not in mouse_pressed:
+                        pressed.discard(idx)
 
-            # --- Механіка миші ---
-            if e.type == MOUSEBUTTONDOWN:
+            # --- МИША: НАТИСКАННЯ ---
+            elif e.type == MOUSEBUTTONDOWN and e.button == 1:
                 if settings_btn.collidepoint(e.pos):
-                    # Ефект спалаху для кнопки налаштувань видалено
                     current_screen = "settings"
                     settings_menu = SettingsMenu(
                         initial_volume=current_volume,
                         initial_keys=current_keys_count,
+                        initial_random=is_random_active(),
                         min_keys=1,
                         max_keys=len(KEYS),
                         on_change=apply_settings,
+                        on_toggle_random=toggle_random_sounds,
                         on_back=_back_to_main
                     )
 
-                for i, r in enumerate(key_rects):
-                    if r.collidepoint(e.pos):
-                        k = keys_list[i]
-                        if i not in pressed:
-                            key_anims[i]['pulse'] = 1.5
-                        if sounds[k]:
-                            sounds[k].play()
-                        pressed.add(i)
+                elif autoplay_btn.collidepoint(e.pos):
+                    current_screen = "autoplay_menu"
 
-            if e.type == MOUSEBUTTONUP:
-                for i, r in enumerate(key_rects):
-                    if i in pressed and r.collidepoint(e.pos):
-                        pressed.remove(i)
+                    def on_midi_select(path):
+                        global current_screen
+                        midi_manager.load_midi(path)
+                        midi_manager.start()
+                        current_screen = "main"
 
-    # ----------------------- ОБЧИСЛЕННЯ ПЛАВНИХ АНІМАЦІЙ --------------------
+                    autoplay_menu = AutoplayMenu(on_midi_select, _back_to_main)
+
+                elif midi_manager.is_playing and stop_btn.collidepoint(e.pos):
+                    midi_manager.stop(pressed)
+
+                else:
+                    for i, r in enumerate(key_rects):
+                        if r.collidepoint(e.pos):
+                            k = keys_list[i]
+                            if i not in pressed:
+                                key_anims[i]['pulse'] = 1.5
+                            play_sound(k)
+                            mouse_pressed.add(i)
+                            pressed.add(i)
+
+            # --- МИША: ВІДПУСКАННЯ ---
+            elif e.type == MOUSEBUTTONUP and e.button == 1:
+                for idx in mouse_pressed:
+                    if idx not in hw_pressed:
+                        pressed.discard(idx)
+                mouse_pressed.clear()
+
+            # --- МИША: ПРОВЕДЕННЯ З ЗАТИСНУТОЮ КНОПКОЮ ---
+            elif e.type == MOUSEMOTION and e.buttons[0]:
+                hovered_idx = next((i for i, r in enumerate(key_rects) if r.collidepoint(e.pos)), None)
+
+                if hovered_idx not in mouse_pressed:
+                    for idx in mouse_pressed:
+                        if idx not in hw_pressed:
+                            pressed.discard(idx)
+                    mouse_pressed.clear()
+
+                    if hovered_idx is not None:
+                        k = keys_list[hovered_idx]
+                        if hovered_idx not in pressed:
+                            key_anims[hovered_idx]['pulse'] = 1.5
+                        play_sound(k)
+                        mouse_pressed.add(hovered_idx)
+                        pressed.add(hovered_idx)
+
+    # Оновлення стану сцен
     if current_screen == "main":
+        midi_manager.update(pressed, key_anims, get_active_sounds_map())
+
         for i in range(current_keys_count):
+            anim = key_anims[i]
             is_pressed = i in pressed
 
-            # Ефекти натискання: затемнення кольору до матового сірого та зменшення масштабу до 0.94
-            target_color = [165, 165, 165] if is_pressed else [255, 255, 255]
+            target_val = 165.0 if is_pressed else 255.0
             target_scale = 0.94 if is_pressed else 1.0
-            target_offset = 0.0
 
-            # Плавна лінійна інтерполяція (коефіцієнт 0.25 для м'якості анімації)
-            for c_idx in range(3):
-                key_anims[i]['color'][c_idx] += (target_color[c_idx] - key_anims[i]['color'][c_idx]) * 0.25
-            key_anims[i]['offset'] += (target_offset - key_anims[i]['offset']) * 0.25
-            key_anims[i]['scale'] += (target_scale - key_anims[i]['scale']) * 0.25
+            # Оптимізована інтерполяція колірних каналів
+            c = anim['color']
+            c[0] += (target_val - c[0]) * 0.25
+            c[1] += (target_val - c[1]) * 0.25
+            c[2] += (target_val - c[2]) * 0.25
 
-            # Плавне згасання таймера білого імпульсу (pulse)
-            if key_anims[i]['pulse'] > 0:
-                key_anims[i]['pulse'] -= 0.05
-                if key_anims[i]['pulse'] < 0:
-                    key_anims[i]['pulse'] = 0.0
+            anim['scale'] += (target_scale - anim['scale']) * 0.25
 
-    # -------------------------- ВІДМАЛЬОВКА ЕКРАНІВ ---------------------------
+            if anim['pulse'] > 0:
+                anim['pulse'] = max(0.0, anim['pulse'] - 0.05)
+
+    # Отрисовка
     screen.blit(BACKGROUND_IMG, (0, 0))
 
     if current_screen == "settings":
         if settings_menu:
             settings_menu.draw(screen)
+    elif current_screen == "autoplay_menu":
+        if autoplay_menu:
+            autoplay_menu.draw(screen)
     else:
         if LOGO_IMG:
-            logo_x = (WINDOW_WIDTH - LOGO_IMG.get_width()) // 2
-            screen.blit(LOGO_IMG, (logo_x, 25))
+            screen.blit(LOGO_IMG, (LOGO_X, 25))
 
         draw_keys(screen, key_rects, key_anims)
         settings_btn.draw(screen)
+        autoplay_btn.draw(screen)
+
+        if midi_manager.is_playing:
+            stop_btn.draw(screen)
 
     display.update()
 
